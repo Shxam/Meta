@@ -1,0 +1,286 @@
+name: gst-reconciliation-env
+version: "1.0.0"
+description: >
+  An OpenEnv-compliant reinforcement-learning environment for Indian GST
+  invoice reconciliation against GSTR-2B auto-generated ITC statements.
+  Agents must classify purchase invoices as MATCHED, MISMATCH, MISSING_IN_2B,
+  or EXTRA_IN_2B, identify mismatch fields, and compute claimable Input Tax
+  Credit (ITC) to maximise a graded reward signal.
+
+author: "GST Recon Team"
+license: MIT
+
+server:
+  host: "0.0.0.0"
+  port: 7860
+  framework: fastapi
+  entry_point: "gst_env.main:app"
+  docs: "http://localhost:7860/docs"
+
+endpoints:
+  health:
+    path: /health
+    method: GET
+    description: Liveness probe — returns status and version
+
+  tasks:
+    path: /tasks
+    method: GET
+    description: List all available tasks with metadata
+
+  state:
+    path: /state
+    method: GET
+    description: Current environment state (task_id, episode_id, step, done)
+
+  reset:
+    path: /reset
+    method: POST
+    description: >
+      Reset environment and start a new episode.
+      Returns a full Observation with invoices and GSTR-2B entries.
+    body:
+      task_id:
+        type: string
+        enum:
+          - task1_easy
+          - task2_medium
+          - task3_hard
+          - task4_credit_notes
+          - task5_stress
+          - task6_mixed_docs
+        required: true
+
+  step:
+    path: /step
+    method: POST
+    description: >
+      Submit agent action. Returns (observation, reward, done, info).
+      This is a single-step environment — each episode ends after one step.
+    body: Action
+
+  grader:
+    path: /grader
+    method: POST
+    description: >
+      Grade an Action against ground truth without advancing the episode state.
+      Useful for evaluation and debugging.
+    body: Action
+
+  baseline:
+    path: /baseline
+    method: GET
+    description: >
+      Run the naive rule-based baseline agent on all six tasks.
+      Returns scores per task and average.
+
+tasks:
+  - id: task1_easy
+    difficulty: easy
+    num_invoices: 10
+    num_gstr2b_entries: 10
+    description: >
+      10 invoices, all perfectly matched in GSTR-2B.
+      Agent must classify all as MATCHED and compute the full claimable ITC.
+    mismatch_types: []
+    reward_range: [0.0, 1.0]
+    scoring:
+      match_weight: 0.70
+      itc_weight: 0.30
+
+  - id: task2_medium
+    difficulty: medium
+    num_invoices: 50
+    num_gstr2b_entries: 48
+    description: >
+      50 invoices with 8 deliberate mismatches injected.
+      Mismatch types: amount deviation, date shift, GSTIN error, missing from GSTR-2B.
+    mismatch_types:
+      - amount_deviation
+      - date_shift
+      - gstin_error
+      - missing_in_2b
+    reward_range: [0.0, 1.0]
+    scoring:
+      weighted_accuracy_weight: 0.40
+      itc_weight: 0.40
+      penalty_weight: 0.20
+
+  - id: task3_hard
+    difficulty: hard
+    num_invoices: 200
+    num_gstr2b_entries: 190
+    description: >
+      200 invoices with all mismatch types plus penalty days (0-30).
+    mismatch_types:
+      - missing_in_2b
+      - amount_mismatch
+      - extra_in_2b_duplicate
+      - gstin_error
+      - reverse_charge
+    penalty_days_range: [0, 30]
+    reward_range: [0.0, 1.0]
+    scoring:
+      weighted_accuracy_weight: 0.35
+      itc_weight: 0.35
+      penalty_weight: 0.15
+      field_detection_bonus: 0.15
+
+  - id: task4_credit_notes
+    difficulty: medium
+    num_invoices: 75
+    num_gstr2b_entries: 65
+    description: >
+      75 invoices with credit notes and itc_available mismatches mixed in.
+    mismatch_types:
+      - missing_in_2b
+      - amount_deviation
+      - gstin_error
+      - itc_available_false
+    penalty_days_range: [0, 15]
+    reward_range: [0.0, 1.0]
+    scoring:
+      weighted_accuracy_weight: 0.35
+      itc_weight: 0.35
+      field_bonus: 0.20
+      confidence_bonus: 0.10
+
+  - id: task5_stress
+    difficulty: hard
+    num_invoices: 500
+    num_gstr2b_entries: 470
+    description: >
+      500 invoices — high volume stress test. All mismatch types present.
+      Heavy false-positive penalty for marking MISMATCH as MATCHED.
+    mismatch_types:
+      - missing_in_2b
+      - amount_mismatch
+      - extra_in_2b_duplicate
+      - gstin_error
+      - itc_available_false
+      - date_shift
+    penalty_days_range: [0, 30]
+    reward_range: [0.0, 1.0]
+    scoring:
+      weighted_accuracy_weight: 0.30
+      itc_weight: 0.30
+      field_bonus: 0.15
+      false_positive_penalty: 0.15
+      penalty_weight: 0.10
+
+  - id: task6_mixed_docs
+    difficulty: hard
+    num_invoices: 150
+    num_gstr2b_entries: 135
+    description: >
+      150 invoices with mixed document types and all mismatch types.
+    mismatch_types:
+      - missing_in_2b
+      - amount_mismatch
+      - extra_in_2b_duplicate
+      - gstin_error
+      - date_shift
+      - itc_available_false
+    penalty_days_range: [0, 20]
+    reward_range: [0.0, 1.0]
+    scoring:
+      weighted_accuracy_weight: 0.30
+      itc_weight: 0.30
+      field_bonus: 0.20
+      penalty_weight: 0.20
+
+observation:
+  task_id: {type: string}
+  episode_id: {type: string}
+  invoices: {type: array, items: Invoice}
+  gstr2b_entries: {type: array, items: GSTR2BEntry}
+  tax_period: {type: string}
+  max_itc_possible: {type: Decimal}
+  step_number: {type: integer}
+  instructions: {type: string}
+
+Invoice:
+  invoice_id: string
+  vendor_gstin: string
+  invoice_number: string
+  invoice_date: date
+  taxable_value: Decimal
+  cgst: Decimal
+  sgst: Decimal
+  igst: Decimal
+  hsn_code: string
+  vendor_name: string
+
+GSTR2BEntry:
+  supplier_gstin: string
+  invoice_number: string
+  invoice_date: date
+  taxable_value: Decimal
+  cgst: Decimal
+  sgst: Decimal
+  igst: Decimal
+  itc_available: boolean
+  document_type: string
+
+action:
+  reconciliation_result:
+    type: array
+    items:
+      invoice_id: string
+      status: {enum: [MATCHED, MISMATCH, MISSING_IN_2B, EXTRA_IN_2B]}
+      correction_note: string|null
+      mismatch_fields: {type: array, items: string}
+  claimable_itc: Decimal
+  confidence: {type: float, range: [0.0, 1.0]}
+
+reward:
+  total: float
+  match_score: float
+  itc_score: float
+  false_positive_penalty: float
+  penalty_day_penalty: float
+  done: boolean
+  info:
+    correct_matches: integer
+    total_invoices: integer
+    episode_id: string
+    itc_error: float
+    task_score: float
+
+agent:
+  strategy: hybrid
+  stage_1: deterministic_python_diff
+  stage_2: llm_batched_openai_client
+  model: meta-llama/Llama-3.3-70B-Instruct
+  batch_size: 25
+  batch_sleep_seconds: 10
+  description: >
+    Stage 1 resolves clear-cut MISSING, EXTRA, and MATCHED cases using a
+    Python field differ. Stage 2 sends only ambiguous invoices to the LLM
+    via OpenAI client (HF Router) in batches of 25. ITC and mismatch_fields
+    are always recomputed deterministically after LLM classification.
+
+docker:
+  image: gst-recon-env
+  build_command: "docker build -t gst-recon-env ."
+  run_command: "docker run -p 7860:7860 --env-file .env gst-recon-env"
+  port: 7860
+
+environment_variables:
+  HF_TOKEN:
+    required: true
+    description: >
+      Your Hugging Face access token (get it at hf.co/settings/tokens).
+      Used as the bearer token for the HF Inference Router LLM calls.
+  API_BASE_URL:
+    required: false
+    default: "https://router.huggingface.co/v1"
+    description: HF Inference Router base URL (OpenAI-compatible).
+  MODEL_NAME:
+    required: false
+    default: "meta-llama/Llama-3.3-70B-Instruct"
+    description: Model ID on HF Hub used for ambiguous invoice classification.
+  BASE_URL:
+    required: false
+    default: "http://localhost:7860"
+    description: FastAPI server URL that inference.py connects to.
